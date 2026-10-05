@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
-"""Descarga los archivos Parquet de 2026 del NYC TLC Trip Record Data.
+"""Descarga los archivos Parquet del NYC TLC Trip Record Data.
 
-Descarga los registros de viajes de taxis amarillos (yellow) y verdes (green)
-correspondientes al anio 2026, que es el conjunto de datos inicial del
-laboratorio. Este script solo contempla el anio 2026.
+Descarga los registros mensuales de viajes de taxis amarillos (yellow) y
+verdes (green) de uno o varios años (por defecto: 2026).
 
 Fuente oficial de los datos:
     https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
 
 Uso:
-    python scripts/download_data.py                 # amarillos y verdes
+    python scripts/download_data.py                      # amarillos y verdes, 2026
     python scripts/download_data.py --taxi yellow
-    python scripts/download_data.py --taxi green
+    python scripts/download_data.py --anio 2024 2026     # varios años
 
 Los archivos se guardan en:
     data/raw/<tipo>/<anio>/<nombre-original>.parquet
 
 Comportamiento:
   - La TLC publica cada mes con varias semanas de atraso, por lo que no todos
-    los meses de 2026 existen todavia. El script consulta al servidor que
-    meses estan publicados en lugar de suponerlos.
+    los meses del año en curso existen todavia. El script consulta al
+    servidor que meses estan publicados en lugar de suponerlos.
   - Un archivo que ya existe localmente no se vuelve a descargar.
   - La descarga se hace sobre un nombre temporal y solo se renombra al
     terminar, de modo que una interrupcion no deja archivos .parquet a medias.
@@ -31,10 +30,10 @@ from pathlib import Path
 
 import requests
 
-ANIO = 2026
+ANIOS_DEFECTO = (2026,)
 TIPOS_TAXI = ("yellow", "green")
 URL_BASE = "https://d37ci6vzurychx.cloudfront.net/trip-data"
-DIR_DESTINO = Path("data/raw")
+DIR_DESTINO = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 TIEMPO_ESPERA = 60          # segundos por peticion
 INTENTOS = 3                # intentos por archivo antes de darse por vencido
@@ -42,19 +41,19 @@ BLOQUE = 1024 * 1024        # 1 MiB por bloque de descarga
 SUFIJO_TEMPORAL = ".part"
 
 
-def construir_nombre(tipo: str, mes: int) -> str:
+def construir_nombre(tipo: str, anio: int, mes: int) -> str:
     """Nombre del archivo publicado por la TLC, p. ej. yellow_tripdata_2026-01.parquet."""
-    return f"{tipo}_tripdata_{ANIO}-{mes:02d}.parquet"
+    return f"{tipo}_tripdata_{anio}-{mes:02d}.parquet"
 
 
-def construir_url(tipo: str, mes: int) -> str:
+def construir_url(tipo: str, anio: int, mes: int) -> str:
     """URL completa del archivo Parquet mensual."""
-    return f"{URL_BASE}/{construir_nombre(tipo, mes)}"
+    return f"{URL_BASE}/{construir_nombre(tipo, anio, mes)}"
 
 
-def ruta_destino(tipo: str, mes: int) -> Path:
+def ruta_destino(tipo: str, anio: int, mes: int) -> Path:
     """Ruta local donde se guarda el archivo."""
-    return DIR_DESTINO / tipo / str(ANIO) / construir_nombre(tipo, mes)
+    return DIR_DESTINO / tipo / str(anio) / construir_nombre(tipo, anio, mes)
 
 
 def esta_publicado(url: str) -> bool:
@@ -103,21 +102,21 @@ def descargar_archivo(url: str, destino: Path) -> int:
     raise requests.RequestException(f"no se pudo descargar {url}: {ultimo_error}")
 
 
-def descargar(tipo: str) -> dict:
-    """Descarga todos los meses publicados de un tipo de taxi para 2026."""
-    print(f"\n=== {tipo.upper()} {ANIO} ===")
+def descargar(tipo: str, anio: int) -> dict:
+    """Descarga todos los meses publicados de un tipo de taxi para `anio`."""
+    print(f"\n=== {tipo.upper()} {anio} ===")
     resumen = {"descargados": 0, "omitidos": 0, "no_publicados": [], "fallidos": []}
 
     for mes in range(1, 13):
-        etiqueta = f"{ANIO}-{mes:02d}"
-        destino = ruta_destino(tipo, mes)
+        etiqueta = f"{anio}-{mes:02d}"
+        destino = ruta_destino(tipo, anio, mes)
 
         if destino.exists() and destino.stat().st_size > 0:
             print(f"  {etiqueta}  ya existe, se omite")
             resumen["omitidos"] += 1
             continue
 
-        url = construir_url(tipo, mes)
+        url = construir_url(tipo, anio, mes)
         if not esta_publicado(url):
             print(f"  {etiqueta}  aun no publicado por la TLC")
             resumen["no_publicados"].append(etiqueta)
@@ -138,23 +137,28 @@ def descargar(tipo: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description=f"Descarga los datos de taxis de {ANIO} del NYC TLC."
+        description="Descarga los datos de taxis del NYC TLC."
     )
     parser.add_argument(
         "--taxi", choices=(*TIPOS_TAXI, "all"), default="all",
         help="tipo de taxi a descargar (por defecto: all)",
+    )
+    parser.add_argument(
+        "--anio", type=int, nargs="+", default=list(ANIOS_DEFECTO),
+        help="anio(s) a descargar (por defecto: %(default)s)",
     )
     argumentos = parser.parse_args()
 
     tipos = TIPOS_TAXI if argumentos.taxi == "all" else (argumentos.taxi,)
 
     total = {"descargados": 0, "omitidos": 0, "no_publicados": [], "fallidos": []}
-    for tipo in tipos:
-        resumen = descargar(tipo)
-        total["descargados"] += resumen["descargados"]
-        total["omitidos"] += resumen["omitidos"]
-        total["no_publicados"] += [f"{tipo} {m}" for m in resumen["no_publicados"]]
-        total["fallidos"] += [f"{tipo} {m}" for m in resumen["fallidos"]]
+    for anio in argumentos.anio:
+        for tipo in tipos:
+            resumen = descargar(tipo, anio)
+            total["descargados"] += resumen["descargados"]
+            total["omitidos"] += resumen["omitidos"]
+            total["no_publicados"] += [f"{tipo} {m}" for m in resumen["no_publicados"]]
+            total["fallidos"] += [f"{tipo} {m}" for m in resumen["fallidos"]]
 
     print("\n" + "=" * 60)
     print("RESUMEN")
